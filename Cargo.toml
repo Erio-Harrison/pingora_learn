@@ -1,0 +1,22 @@
+[package]
+name = "pingora_learn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pingora-core = { git = "https://github.com/cloudflare/pingora.git" }
+pingora-proxy = { git = "https://github.com/cloudflare/pingora.git" }
+pingora-http = { git = "https://github.com/cloudflare/pingora.git" }
+pingora-load-balancing = { git = "https://github.com/cloudflare/pingora.git" }
+pingora-limits = { git = "https://github.com/cloudflare/pingora.git" }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+log = "0.4"
+env_logger = "0.10"
+lazy_static = "1.4"
+bytes = "1.0"
+http = "0.2"
+uuid = { version = "1.0", features = ["v4"] }

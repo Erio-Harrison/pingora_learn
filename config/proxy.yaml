@@ -1,0 +1,31 @@
+server:
+  listen_port: 8080
+  max_connections: 1000
+
+load_balancing:
+  strategy: "round_robin"
+  upstreams:
+    - name: "backend1"
+      address: "127.0.0.1"
+      port: 3000
+      weight: 1
+    - name: "backend2"
+      address: "127.0.0.1"
+      port: 3001
+      weight: 1
+    - name: "backend3"
+      address: "127.0.0.1"
+      port: 3002
+      weight: 1
+
+middleware:
+  auth:
+    enabled: false
+    auth_type: "bearer"
+    valid_tokens:
+      - "token123"
+  
+  rate_limit:
+    enabled: true
+    requests_per_minute: 100
+    burst_size: 10
