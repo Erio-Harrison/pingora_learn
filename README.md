@@ -2,28 +2,58 @@
 
 ```
 pingora_learn/
-├── Cargo.toml                    # Project configuration and dependencies
-├── LICENSE                       # MIT License
-├── README.md                     # Project documentation
+├── Cargo.toml
+├── .env.example
+├── .gitignore
+├── README.md
+├── docker-compose.yml
+│
+├── sql/
+│   ├── 001_init_users.sql
+│   └── 002_init_refresh_tokens.sql
+│
 ├── config/
-│   └── proxy.yaml               # Proxy service configuration
-├── src/
-│   ├── main.rs                  # Application entry point
-│   ├── config/                  # Configuration management
-│   │   ├── mod.rs
-│   │   └── settings.rs          # Configuration structures and loading
-│   ├── proxy/                   # Proxy core module
-│   │   ├── mod.rs
-│   │   ├── service.rs           # ProxyHttp trait implementation
-│   │   └── context.rs           # Request context management
-│   ├── middleware/              # Middleware modules
-│   │   ├── mod.rs
-│   │   ├── auth.rs              # Authentication middleware
-│   │   └── rate_limit.rs        # Rate limiting middleware
-│   └── load_balancing/          # Load balancing module
-│       ├── mod.rs
-│       └── manager.rs           # Load balancer manager
-└── target/                      # Build output directory (generated)
+│   └── proxy.yaml
+│
+└── src/
+    ├── main.rs
+    │
+    ├── config/
+    │   ├── mod.rs
+    │   └── settings.rs
+    │
+    ├── proxy/
+    │   ├── mod.rs
+    │   ├── service.rs  
+    │   └── context.rs
+    │
+    ├── auth/
+    │   ├── mod.rs
+    │   ├── register.rs
+    │   ├── login.rs
+    │   ├── refresh.rs
+    │   ├── logout.rs
+    │   ├── jwt.rs
+    │   └── password.rs
+    │
+    ├── db/
+    │   ├── mod.rs
+    │   ├── pool.rs
+    │   ├── user.rs
+    │   └── token.rs
+    │
+    ├── cache/
+    │   ├── mod.rs
+    │   └── client.rs
+    │
+    ├── middleware/
+    │   ├── mod.rs
+    │   ├── jwt.rs
+    │   └── rate_limit.rs
+    │
+    └── load_balancing/
+        ├── mod.rs
+        └── manager.rs
 ```
 
 # Pingora Proxy Service
@@ -33,7 +63,7 @@ A high-performance HTTP proxy service built with Cloudflare's Pingora framework,
 ## Features
 
 - **Load Balancing**: Round-robin, random, and least-connections strategies
-- **Authentication**: Bearer token, Basic auth, and API key support
+- **Authentication**: JWT-based with register/login/refresh/logout support
 - **Rate Limiting**: Token bucket algorithm with per-client limits
 - **Health Monitoring**: Built-in health check endpoints
 - **Request Tracing**: UUID-based request tracking with detailed logging
@@ -65,12 +95,23 @@ RUST_LOG=info cargo run
 # Health check (no auth required)
 curl http://localhost:8080/health
 
-# Authenticated request
-curl -H "Authorization: Bearer dev-token-123" http://localhost:8080
+# Register a new user
+curl -s -X POST http://localhost:8080/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"SecurePass123!"}'
+
+# Login (use credentials from register response)
+curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"SecurePass123!"}'
+
+# Authenticated request (use access_token from login response)
+curl -s http://localhost:8080/ \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN_HERE"
 
 # Trigger rate limit (15 requests)
 for i in {1..15}; do 
-  curl -H "Authorization: Bearer dev-token-123" http://localhost:8080
+  curl -s -H "Authorization: Bearer YOUR_ACCESS_TOKEN_HERE" http://localhost:8080
 done
 ```
 
@@ -94,10 +135,7 @@ load_balancing:
 middleware:
   auth:
     enabled: true
-    auth_type: "bearer"  # bearer, basic, api_key
-    valid_tokens:
-      - "dev-token-123"
-      - "test-token-456"
+    auth_type: "jwt"  # jwt (default for dynamic tokens)
   
   rate_limit:
     enabled: true
@@ -107,24 +145,44 @@ middleware:
 
 ## Authentication
 
-### Bearer Token (default)
-```bash
-curl -H "Authorization: Bearer dev-token-123" http://localhost:8080
-```
+### JWT Token Flow
 
-### API Key
-Set `auth_type: "api_key"` in config:
-```bash
-curl -H "X-API-Key: dev-token-123" http://localhost:8080
-```
+1. **Register**: Create a new user account.
+   ```bash
+   curl -X POST http://localhost:8080/auth/register \
+     -H "Content-Type: application/json" \
+     -d '{"email":"user@example.com","password":"SecurePass123!"}'
+   ```
+   Response: `{"user_id":"uuid","email":"user@example.com","access_token":"jwt","refresh_token":"jwt","token_type":"Bearer","expires_in":900}`
 
-### Basic Auth
-Set `auth_type: "basic"` in config:
-```bash
-curl -H "Authorization: Basic dev-token-123" http://localhost:8080
-```
+2. **Login**: Authenticate and get tokens.
+   ```bash
+   curl -X POST http://localhost:8080/auth/login \
+     -H "Content-Type: application/json" \
+     -d '{"email":"user@example.com","password":"SecurePass123!"}'
+   ```
+   Response: Same as register.
 
-**Note**: `/health` endpoint bypasses authentication
+3. **Use Access Token**: For protected requests.
+   ```bash
+   curl -H "Authorization: Bearer ACCESS_TOKEN" http://localhost:8080
+   ```
+
+4. **Refresh Token**: Renew access token.
+   ```bash
+   curl -X POST http://localhost:8080/auth/refresh \
+     -H "Content-Type: application/json" \
+     -d '{"refresh_token":"REFRESH_TOKEN"}'
+   ```
+
+5. **Logout**: Invalidate tokens.
+   ```bash
+   curl -X POST http://localhost:8080/auth/logout \
+     -H "Content-Type: application/json" \
+     -d '{"refresh_token":"REFRESH_TOKEN"}'
+   ```
+
+**Note**: `/health` endpoint bypasses authentication. Access tokens expire in 15 minutes; refresh tokens in 7 days.
 
 ## Load Balancing
 
@@ -153,7 +211,7 @@ The proxy distributes requests across multiple backend servers using configurabl
 ```bash
 # Send multiple requests to see distribution
 for i in {1..10}; do
-  curl -s -H "Authorization: Bearer dev-token-123" http://localhost:8080 | head -1
+  curl -s -H "Authorization: Bearer YOUR_ACCESS_TOKEN_HERE" http://localhost:8080 | head -1
 done
 ```
 
@@ -164,7 +222,7 @@ Watch the logs to see requests distributed across `127.0.0.1:3000`, `127.0.0.1:3
 The proxy adds custom headers to all responses:
 
 ```bash
-curl -I -H "Authorization: Bearer dev-token-123" http://localhost:8080
+curl -I -H "Authorization: Bearer YOUR_ACCESS_TOKEN_HERE" http://localhost:8080
 ```
 
 ```
@@ -178,7 +236,7 @@ X-Response-Time: 1ms
 
 | Status | Reason | Solution |
 |--------|--------|----------|
-| 401 Unauthorized | Missing or invalid authentication | Add valid `Authorization` header |
+| 401 Unauthorized | Missing or invalid authentication | Register/login and use valid `Authorization` header |
 | 429 Too Many Requests | Rate limit exceeded | Wait and retry |
 | 502 Bad Gateway | Backend unavailable | Check backend services are running |
 

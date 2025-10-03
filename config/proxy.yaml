@@ -2,6 +2,24 @@ server:
   listen_port: 8080
   max_connections: 1000
 
+# Database configuration (reads from environment variables)
+database:
+  url: "${DATABASE_URL}"
+  max_connections: 10
+  min_connections: 2
+
+# Redis configuration
+redis:
+  url: "${REDIS_URL}"
+  pool_size: 10
+
+# JWT configuration
+jwt:
+  secret: "${JWT_SECRET}"
+  access_token_expiration: 900        # 15 minutes
+  refresh_token_expiration: 604800    # 7 days
+
+# Load balancing
 load_balancing:
   strategy: "round_robin"  # Options: round_robin, random, least_conn
   upstreams:
@@ -20,14 +38,10 @@ load_balancing:
       port: 3002
       weight: 1
 
+# Middleware configuration
 middleware:
   auth:
     enabled: true
-    auth_type: "bearer"  # Options: bearer, basic, api_key
-    valid_tokens:
-      - "dev-token-123"
-      - "test-token-456"
-      - "prod-token-789"
   
   rate_limit:
     enabled: true
