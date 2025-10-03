@@ -3,16 +3,18 @@ server:
   max_connections: 1000
 
 load_balancing:
-  strategy: "round_robin"
+  strategy: "round_robin"  # Options: round_robin, random, least_conn
   upstreams:
     - name: "backend1"
       address: "127.0.0.1"
       port: 3000
       weight: 1
+    
     - name: "backend2"
       address: "127.0.0.1"
       port: 3001
       weight: 1
+    
     - name: "backend3"
       address: "127.0.0.1"
       port: 3002
@@ -20,10 +22,12 @@ load_balancing:
 
 middleware:
   auth:
-    enabled: false
-    auth_type: "bearer"
+    enabled: true
+    auth_type: "bearer"  # Options: bearer, basic, api_key
     valid_tokens:
-      - "token123"
+      - "dev-token-123"
+      - "test-token-456"
+      - "prod-token-789"
   
   rate_limit:
     enabled: true

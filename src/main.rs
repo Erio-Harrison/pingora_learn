@@ -11,8 +11,7 @@ use config::Settings;
 use proxy::ProxyService;
 use pingora_core::server::{configuration::Opt, Server};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     info!("Start Pingora proxy service...");
 
@@ -23,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::new(Some(opt))?;
     server.bootstrap();
 
-    let proxy_service = ProxyService::new(Arc::new(settings)).await?;
+    let proxy_service = ProxyService::new(Arc::new(settings))?;
     
     let mut http_proxy = pingora_proxy::http_proxy_service(
         &server.configuration,

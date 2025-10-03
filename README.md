@@ -37,145 +37,168 @@ A high-performance HTTP proxy service built with Cloudflare's Pingora framework,
 - **Rate Limiting**: Token bucket algorithm with per-client limits
 - **Health Monitoring**: Built-in health check endpoints
 - **Request Tracing**: UUID-based request tracking with detailed logging
-- **Configurable**: YAML-based configuration management
 
-## Usage
+## Quick Start
 
-### Setup Backend Services
-
-Start test servers on the configured ports:
+### 1. Start Backend Services
 
 ```bash
-# Terminal 1 - Backend on port 3000
+# Terminal 1
 python -m http.server 3000
 
-# Terminal 2 - Backend on port 3001  
+# Terminal 2
 python -m http.server 3001
 
-# Terminal 3 - Backend on port 3002
+# Terminal 3
 python -m http.server 3002
 ```
 
-Alternatively, use Node.js:
-```bash
-# Install serve globally
-npm install -g serve
+### 2. Run Proxy Service
 
-# Start backends
-serve -p 3000
-serve -p 3001  
-serve -p 3002
+```bash
+RUST_LOG=info cargo run
 ```
 
-Or use any web server of your choice on these ports.
+### 3. Test Requests
 
-### Basic Requests
 ```bash
-# Proxy request
-curl http://localhost:8080
-
-# Health check
+# Health check (no auth required)
 curl http://localhost:8080/health
 
-# View response headers
-curl -I http://localhost:8080
+# Authenticated request
+curl -H "Authorization: Bearer dev-token-123" http://localhost:8080
+
+# Trigger rate limit (15 requests)
+for i in {1..15}; do 
+  curl -H "Authorization: Bearer dev-token-123" http://localhost:8080
+done
 ```
 
-### Authentication
-```bash
-# Bearer token
-curl -H "Authorization: Bearer your-token" http://localhost:8080
+## Configuration
 
-# API key
-curl -H "X-API-Key: your-key" http://localhost:8080
-```
+Edit `config/proxy.yaml`:
 
-### Rate Limiting Test
-```bash
-# Multiple requests to trigger rate limit
-for i in {1..15}; do curl http://localhost:8080; done
-```
-
-## Architecture
-
-### Core Components
-
-- **ProxyService**: Main proxy logic implementing Pingora's ProxyHttp trait
-- **LoadBalancingManager**: Handles upstream server selection
-- **AuthMiddleware**: Validates authentication credentials  
-- **RateLimitMiddleware**: Enforces rate limits using token bucket algorithm
-- **ProxyContext**: Tracks per-request state and metadata
-
-### Request Flow
-
-1. **Request Reception** → Proxy receives client request
-2. **Authentication** → Validates credentials (if enabled)
-3. **Rate Limiting** → Checks request frequency limits
-4. **Load Balancing** → Selects upstream server
-5. **Request Forwarding** → Sends request to backend
-6. **Response Processing** → Adds proxy headers and logging
-7. **Response Return** → Returns response to client
-
-## Configuration Reference
-
-### Server Configuration
 ```yaml
 server:
-  listen_port: 8080           # Proxy listening port
-  max_connections: 1000       # Maximum concurrent connections
-```
+  listen_port: 8080
+  max_connections: 1000
 
-### Load Balancing
-```yaml
 load_balancing:
-  strategy: "round_robin"     # round_robin, random, least_conn
+  strategy: "round_robin"  # round_robin, random, least_conn
   upstreams:
     - name: "backend1"
       address: "127.0.0.1"
       port: 3000
-      weight: 1               # Load balancing weight
-```
+      weight: 1
 
-### Authentication
-```yaml
 middleware:
   auth:
     enabled: true
-    auth_type: "bearer"       # bearer, basic, api_key
-    valid_tokens: ["token1", "token2"]
-```
-
-### Rate Limiting
-```yaml
-middleware:
+    auth_type: "bearer"  # bearer, basic, api_key
+    valid_tokens:
+      - "dev-token-123"
+      - "test-token-456"
+  
   rate_limit:
     enabled: true
-    requests_per_minute: 100  # Token refill rate
-    burst_size: 10           # Initial token capacity
+    requests_per_minute: 100
+    burst_size: 10
 ```
 
-## Monitoring
+## Authentication
 
-### Request Tracing
-Each request receives a unique UUID for tracking:
-```
-[INFO] Request start: a1b2c3d4-... /api/users
-[INFO] Selected upstream: a1b2c3d4-... -> 127.0.0.1:3000
-[INFO] Request complete: a1b2c3d4-... /api/users -> 127.0.0.1:3000 (200) (15ms)
-```
-
-### Health Endpoint
+### Bearer Token (default)
 ```bash
-curl http://localhost:8080/health
-# Returns: {"status": "healthy"}
+curl -H "Authorization: Bearer dev-token-123" http://localhost:8080
 ```
 
-## Performance
+### API Key
+Set `auth_type: "api_key"` in config:
+```bash
+curl -H "X-API-Key: dev-token-123" http://localhost:8080
+```
 
-- Built on Pingora's high-performance networking stack
-- Async/await throughout for non-blocking I/O
-- Efficient memory usage with zero-copy where possible
-- Configurable connection limits and timeouts
+### Basic Auth
+Set `auth_type: "basic"` in config:
+```bash
+curl -H "Authorization: Basic dev-token-123" http://localhost:8080
+```
+
+**Note**: `/health` endpoint bypasses authentication
+
+## Load Balancing
+
+The proxy distributes requests across multiple backend servers using configurable strategies:
+
+### Strategies
+
+- **round_robin**: Distributes requests sequentially across all upstreams
+- **random**: Randomly selects an upstream for each request
+- **least_conn**: Routes to the upstream with fewest active connections
+
+### Example Log Output
+
+```
+[INFO] Request Start: 70605595-3c7d-4b4e-827c-8fb757b933d1 /
+[INFO] Select Upstream: 70605595-3c7d-4b4e-827c-8fb757b933d1 -> 127.0.0.1:3000
+[INFO] Request Completed: 70605595-3c7d-4b4e-827c-8fb757b933d1 / -> 127.0.0.1:3000 (200) (1ms)
+
+[INFO] Request Start: a8b3f2e1-4d5c-4a1b-9e7f-8c3d2a1b0f9e /
+[INFO] Select Upstream: a8b3f2e1-4d5c-4a1b-9e7f-8c3d2a1b0f9e -> 127.0.0.1:3001
+[INFO] Request Completed: a8b3f2e1-4d5c-4a1b-9e7f-8c3d2a1b0f9e / -> 127.0.0.1:3001 (200) (2ms)
+```
+
+### Testing Load Balancing
+
+```bash
+# Send multiple requests to see distribution
+for i in {1..10}; do
+  curl -s -H "Authorization: Bearer dev-token-123" http://localhost:8080 | head -1
+done
+```
+
+Watch the logs to see requests distributed across `127.0.0.1:3000`, `127.0.0.1:3001`, and `127.0.0.1:3002`.
+
+## Response Headers
+
+The proxy adds custom headers to all responses:
+
+```bash
+curl -I -H "Authorization: Bearer dev-token-123" http://localhost:8080
+```
+
+```
+HTTP/1.0 200 OK
+X-Proxy-By: Pingora-Custom-Proxy
+X-Request-ID: 70605595-3c7d-4b4e-827c-8fb757b933d1
+X-Response-Time: 1ms
+```
+
+## Error Responses
+
+| Status | Reason | Solution |
+|--------|--------|----------|
+| 401 Unauthorized | Missing or invalid authentication | Add valid `Authorization` header |
+| 429 Too Many Requests | Rate limit exceeded | Wait and retry |
+| 502 Bad Gateway | Backend unavailable | Check backend services are running |
+
+## Architecture
+
+```
+Client Request
+    ↓
+Authentication Check (if enabled)
+    ↓
+Rate Limiting Check (if enabled)
+    ↓
+Load Balancer Selection
+    ↓
+Forward to Upstream Backend
+    ↓
+Add Proxy Headers
+    ↓
+Return Response to Client
+```
 
 ## License
 

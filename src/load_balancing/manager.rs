@@ -12,7 +12,7 @@ pub struct LoadBalancingManager {
 }
 
 impl LoadBalancingManager {
-    pub async fn new(settings: Arc<Settings>) -> Result<Self> {
+    pub fn new(settings: Arc<Settings>) -> Result<Self> {
         let config = settings.load_balancing.clone();
         let upstreams = config.upstreams.clone();
         

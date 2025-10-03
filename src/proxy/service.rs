@@ -21,10 +21,15 @@ pub struct ProxyService {
 }
 
 impl ProxyService {
-    pub async fn new(settings: Arc<Settings>) -> Result<Self> {
+    pub fn new(settings: Arc<Settings>) -> Result<Self> {
         info!("Initialize the proxy service...");
+        info!("Auth config: enabled={}, type={}, tokens={:?}", 
+            settings.middleware.auth.enabled,
+            settings.middleware.auth.auth_type,
+            settings.middleware.auth.valid_tokens
+        );    
         
-        let load_balancer = LoadBalancingManager::new(settings.clone()).await?;
+        let load_balancer = LoadBalancingManager::new(settings.clone())?;
         let auth_middleware = AuthMiddleware::new(&settings.middleware.auth);
         let rate_limit_middleware = RateLimitMiddleware::new(&settings.middleware.rate_limit);
         
@@ -50,30 +55,54 @@ impl ProxyHttp for ProxyService {
         ctx.request_id = request_id.clone();
         ctx.start_time = std::time::Instant::now();
         
-        info!("Request Start: {} {}", request_id, session.req_header().uri);
+        let uri = session.req_header().uri.to_string();
+        info!("Request Start: {} {}", request_id, uri);
         
-        // 认证检查
+        info!("Auth check: enabled={}", self.settings.middleware.auth.enabled);
+        
         if self.settings.middleware.auth.enabled {
-            if let Err(e) = self.auth_middleware.check_auth(session.req_header()) {
-                error!("Authentication failed: {}", e);
-                let _ = session.respond_error_with_body(403, Bytes::from_static(b"Unauthorized")).await;
-                return Ok(true);
+            info!("Running authentication check...");
+            
+            if let Some(auth_header) = session.req_header().headers.get("Authorization") {
+                info!("Authorization header present: {:?}", auth_header);
+            } else {
+                info!("No Authorization header found");
             }
+            
+            match self.auth_middleware.check_auth(session.req_header()) {
+                Ok(_) => {
+                    info!("Authentication successful for request {}", request_id);
+                }
+                Err(e) => {
+                    error!("Authentication failed for request {}: {}", request_id, e);
+                    let _ = session.respond_error_with_body(
+                        401,
+                        Bytes::from_static(b"Unauthorized")
+                    ).await;
+                    return Ok(true);
+                }
+            }
+        } else {
+            info!("Authentication disabled, skipping check");
         }
         
-        // 限流检查
         if self.settings.middleware.rate_limit.enabled {
             if let Err(e) = self.rate_limit_middleware.check_rate_limit(session) {
-                warn!("Current limit trigger: {}", e);
-                let _ = session.respond_error_with_body(429, Bytes::from_static(b"Rate Limited")).await;
+                warn!("Rate limit triggered: {}", e);
+                let _ = session.respond_error_with_body(
+                    429, 
+                    Bytes::from_static(b"Too Many Requests")
+                ).await;
                 return Ok(true);
             }
         }
         
-        // 健康检查端点
         if session.req_header().uri.path() == "/health" {
             let health_response = r#"{"status": "healthy"}"#;
-            let _ = session.respond_error_with_body(200, Bytes::from(health_response)).await;
+            let _ = session.respond_error_with_body(
+                200, 
+                Bytes::from(health_response)
+            ).await;
             return Ok(true);
         }
         
