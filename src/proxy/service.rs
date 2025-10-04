@@ -13,16 +13,20 @@ use crate::auth::{login_user, logout_user, refresh_token, register_user, JwtMana
 use crate::cache::RedisClient;
 use crate::config::Settings;
 use crate::load_balancing::manager::LoadBalancerManager;
+use crate::middleware::{JwtMiddleware, RateLimitMiddleware};
 use crate::proxy::context::ProxyContext;
 use pingora_core::upstreams::peer::Peer;
 
-/// Proxy service with authentication
+/// Proxy service with authentication and rate limiting
 pub struct ProxyService {
     pub settings: Arc<Settings>,
     pub db_pool: Arc<PgPool>,
     pub redis_client: Arc<RedisClient>,
     pub jwt_manager: Arc<JwtManager>,
     pub load_balancer: Arc<LoadBalancerManager>,
+    // Middleware components
+    jwt_middleware: JwtMiddleware,
+    rate_limit_middleware: Option<RateLimitMiddleware>,
 }
 
 impl ProxyService {
@@ -34,12 +38,28 @@ impl ProxyService {
         jwt_manager: JwtManager,
         load_balancer: LoadBalancerManager,
     ) -> Self {
+        // Initialize JWT middleware
+        let jwt_middleware = JwtMiddleware::new(jwt_manager.clone());
+
+        // Initialize rate limit middleware if enabled
+        let rate_limit_middleware = if settings.middleware.rate_limit.enabled {
+            Some(RateLimitMiddleware::new(
+                redis_client.clone(),
+                settings.middleware.rate_limit.requests_per_minute,
+                settings.middleware.rate_limit.burst_size,
+            ))
+        } else {
+            None
+        };
+
         Self {
             settings: Arc::new(settings),
             db_pool: Arc::new(db_pool),
             redis_client: Arc::new(redis_client),
             jwt_manager: Arc::new(jwt_manager),
             load_balancer: Arc::new(load_balancer),
+            jwt_middleware,
+            rate_limit_middleware,
         }
     }
 }
@@ -55,8 +75,8 @@ impl ProxyHttp for ProxyService {
     /// Handle incoming requests - routing and authentication
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
         let req = session.req_header_mut();
-        let path = req.uri.path().to_string(); // Clone to avoid borrowing issues
-        let method = req.method.as_str().to_string(); // Clone to avoid borrowing issues
+        let path = req.uri.path().to_string();
+        let method = req.method.as_str().to_string();
 
         log::info!(
             "[{}] {} {} from {:?}",
@@ -72,16 +92,17 @@ impl ProxyHttp for ProxyService {
         }
 
         // ============================================================
-        // Exemption /health endpoint
+        // Health check endpoint - no authentication required
         // ============================================================
         if path == "/health" {
-            return Ok(false);
+            let json = r#"{"status":"ok","service":"pingora-proxy"}"#.to_string();
+            self.send_json_response(session, 200, json).await?;
+            return Ok(true); // Stop processing
         }
 
         // ============================================================
-        // Route Authentication Endpoints
+        // Authentication Endpoints
         // ============================================================
-
         if path.starts_with("/auth/") {
             return self
                 .handle_auth_endpoint(session, ctx, &path, &method)
@@ -89,9 +110,8 @@ impl ProxyHttp for ProxyService {
         }
 
         // ============================================================
-        // Protected Routes - Require JWT Authentication
+        // JWT Authentication (for protected routes)
         // ============================================================
-
         if self.settings.middleware.auth.enabled {
             match self.authenticate_request(session.req_header(), ctx).await {
                 Ok(()) => {
@@ -108,9 +128,8 @@ impl ProxyHttp for ProxyService {
         // ============================================================
         // Rate Limiting
         // ============================================================
-
-        if self.settings.middleware.rate_limit.enabled {
-            if let Err(e) = self.check_rate_limit(ctx).await {
+        if let Some(rate_limiter) = &self.rate_limit_middleware {
+            if let Err(e) = self.check_rate_limit(ctx, rate_limiter).await {
                 log::warn!("[{}] Rate limit exceeded: {}", ctx.request_id, e);
                 self.send_rate_limit_response(session).await?;
                 return Ok(true); // Stop processing
@@ -137,13 +156,24 @@ impl ProxyHttp for ProxyService {
         Ok(peer)
     }
 
-    /// Log response
+    /// Add custom headers to response
     async fn response_filter(
         &self,
         _session: &mut Session,
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        // Add custom proxy headers
+        upstream_response
+            .insert_header("X-Proxy-By", "Pingora-Custom-Proxy")
+            .ok();
+        upstream_response
+            .insert_header("X-Request-ID", &ctx.request_id)
+            .ok();
+        upstream_response
+            .insert_header("X-Response-Time", format!("{}ms", ctx.elapsed().as_millis()))
+            .ok();
+
         log::info!(
             "[{}] Response: {} (took {:?})",
             ctx.request_id,
@@ -189,13 +219,11 @@ impl ProxyService {
     async fn handle_register(&self, session: &mut Session, ctx: &ProxyContext) -> Result<()> {
         log::info!("[{}] Handling registration", ctx.request_id);
 
-        // Read request body
         let body = self.read_request_body(session).await?;
 
         let request: crate::auth::RegisterRequest = serde_json::from_slice(&body)
             .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
 
-        // Register user
         match register_user(
             &self.db_pool,
             &self.jwt_manager,
@@ -206,8 +234,7 @@ impl ProxyService {
         {
             Ok(response) => {
                 let json = serde_json::to_string(&response)
-                    .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
-
+                    .map_err(|e| Error::because(ErrorType::InternalError, "JSON serialize error", e))?;
                 self.send_json_response(session, 201, json).await?;
             }
             Err(e) => {
@@ -226,8 +253,8 @@ impl ProxyService {
 
         let body = self.read_request_body(session).await?;
 
-        let request: crate::auth::LoginRequest =
-            serde_json::from_slice(&body).map_err(|_| Error::new_str("Invalid JSON"))?;
+        let request: crate::auth::LoginRequest = serde_json::from_slice(&body)
+            .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
 
         match login_user(
             &self.db_pool,
@@ -239,8 +266,7 @@ impl ProxyService {
         {
             Ok(response) => {
                 let json = serde_json::to_string(&response)
-                    .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
-
+                    .map_err(|e| Error::because(ErrorType::InternalError, "JSON serialize error", e))?;
                 self.send_json_response(session, 200, json).await?;
             }
             Err(e) => {
@@ -272,8 +298,7 @@ impl ProxyService {
         {
             Ok(response) => {
                 let json = serde_json::to_string(&response)
-                    .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
-
+                    .map_err(|e| Error::because(ErrorType::InternalError, "JSON serialize error", e))?;
                 self.send_json_response(session, 200, json).await?;
             }
             Err(e) => {
@@ -290,7 +315,6 @@ impl ProxyService {
     async fn handle_logout(&self, session: &mut Session, ctx: &ProxyContext) -> Result<()> {
         log::info!("[{}] Handling logout", ctx.request_id);
 
-        // Extract access token from Authorization header
         let access_token = self.extract_token_from_header(session.req_header())?;
 
         let body = self.read_request_body(session).await?;
@@ -321,18 +345,24 @@ impl ProxyService {
         Ok(())
     }
 
-    /// Authenticate request using JWT
+    /// Authenticate request using JWT middleware
     async fn authenticate_request(
         &self,
         req: &RequestHeader,
         ctx: &mut ProxyContext,
     ) -> std::result::Result<(), String> {
-        // Extract token from Authorization header
+        // Use JWT middleware to verify token
+        let user_id_str = self
+            .jwt_middleware
+            .verify_request(req)
+            .ok_or_else(|| "Invalid or missing token".to_string())?;
+
+        // Extract token for blacklist check
         let token = self
             .extract_token_from_header(req)
             .map_err(|e| format!("Token extraction failed: {}", e))?;
 
-        // Check if token is blacklisted
+        // Check if token is blacklisted (additional security layer)
         let is_blacklisted = self
             .redis_client
             .is_token_blacklisted(&token)
@@ -343,14 +373,37 @@ impl ProxyService {
             return Err("Token has been revoked".to_string());
         }
 
-        // Validate token
-        let claims = self.jwt_manager.validate_token(&token)?;
-
         // Parse user ID
-        let user_id = uuid::Uuid::parse_str(&claims.sub)
+        let user_id = uuid::Uuid::parse_str(&user_id_str)
             .map_err(|_| "Invalid user ID in token".to_string())?;
 
         ctx.set_user_id(user_id);
+
+        Ok(())
+    }
+
+    /// Check rate limit using middleware
+    async fn check_rate_limit(
+        &self,
+        ctx: &ProxyContext,
+        rate_limiter: &RateLimitMiddleware,
+    ) -> std::result::Result<(), String> {
+        // Determine client identifier (user_id > client_ip > request_id)
+        let client_id = if let Some(user_id) = &ctx.user_id {
+            format!("user:{}", user_id)
+        } else if let Some(ip) = &ctx.client_ip {
+            format!("ip:{}", ip)
+        } else {
+            format!("anonymous:{}", ctx.request_id)
+        };
+
+        // Check rate limit using token bucket algorithm
+        if !rate_limiter.check_rate_limit(&client_id).await {
+            return Err(format!(
+                "Rate limit exceeded: {} requests per minute allowed",
+                rate_limiter.get_limit()
+            ));
+        }
 
         Ok(())
     }
@@ -360,45 +413,15 @@ impl ProxyService {
         let auth_header = req
             .headers
             .get("Authorization")
-            .ok_or_else(|| pingora_core::Error::new_str("Missing Authorization header"))?
+            .ok_or_else(|| Error::new_str("Missing Authorization header"))?
             .to_str()
-            .map_err(|_| pingora_core::Error::new_str("Invalid Authorization header"))?;
+            .map_err(|_| Error::new_str("Invalid Authorization header"))?;
 
         if !auth_header.starts_with("Bearer ") {
-            return Err(pingora_core::Error::new_str("Invalid Authorization format"));
+            return Err(Error::new_str("Invalid Authorization format"));
         }
 
         Ok(auth_header[7..].to_string())
-    }
-
-    /// Check rate limit
-    async fn check_rate_limit(&self, ctx: &ProxyContext) -> std::result::Result<(), String> {
-        let key = if let Some(user_id) = &ctx.user_id {
-            format!("rate_limit:user:{}", user_id)
-        } else if let Some(ip) = &ctx.client_ip {
-            format!("rate_limit:ip:{}", ip)
-        } else {
-            format!("rate_limit:anonymous:{}", ctx.request_id)
-        };
-
-        let (allowed, count, _) = self
-            .redis_client
-            .check_rate_limit(
-                &key,
-                self.settings.middleware.rate_limit.requests_per_minute as i64,
-                60,
-            )
-            .await
-            .map_err(|e| format!("Rate limit check failed: {}", e))?;
-
-        if !allowed {
-            return Err(format!(
-                "Rate limit exceeded: {}/{}",
-                count, self.settings.middleware.rate_limit.requests_per_minute
-            ));
-        }
-
-        Ok(())
     }
 
     /// Read request body
@@ -414,12 +437,12 @@ impl ProxyService {
         Ok(body)
     }
 
-    /// Send JSON response - FIXED: Accept owned String
+    /// Send JSON response
     async fn send_json_response(
         &self,
         session: &mut Session,
         status: u16,
-        json: String, // Changed from &str to String
+        json: String,
     ) -> Result<()> {
         let mut resp = ResponseHeader::build(status, Some(4))?;
         resp.insert_header("Content-Type", "application/json")?;
@@ -427,7 +450,6 @@ impl ProxyService {
 
         session.write_response_header(Box::new(resp), false).await?;
 
-        // Convert String to Bytes
         let body = Bytes::from(json);
         session.write_response_body(Some(body), true).await?;
 

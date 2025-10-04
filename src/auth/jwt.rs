@@ -14,6 +14,7 @@ pub struct Claims {
 }
 
 /// JWT token manager
+#[derive(Clone)]
 pub struct JwtManager {
     secret: String,
     access_token_expiration: i64,  // in seconds

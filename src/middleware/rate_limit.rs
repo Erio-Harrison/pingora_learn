@@ -1,104 +1,144 @@
-// src/middleware/rate_limit.rs
-use crate::config::settings::RateLimitConfig;
-use pingora_proxy::Session;
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::cache::RedisClient;
+use pingora_http::ResponseHeader;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct RateLimitMiddleware {
-    config: RateLimitConfig,
-    buckets: Arc<Mutex<HashMap<String, TokenBucket>>>,
-}
-
-#[derive(Debug)]
-pub struct RateLimitError(String);
-
-impl fmt::Display for RateLimitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Current limiting error: {}", self.0)
-    }
-}
-
-impl Error for RateLimitError {}
-
-struct TokenBucket {
-    tokens: u32,
-    last_refill: Instant,
-    max_tokens: u32,
-    refill_rate: u32,
-}
-
-impl TokenBucket {
-    fn new(max_tokens: u32, refill_rate: u32) -> Self {
-        TokenBucket {
-            tokens: max_tokens,
-            last_refill: Instant::now(),
-            max_tokens,
-            refill_rate,
-        }
-    }
-
-    fn try_consume(&mut self, tokens: u32) -> bool {
-        self.refill();
-
-        if self.tokens >= tokens {
-            self.tokens -= tokens;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn refill(&mut self) {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_refill);
-
-        if elapsed >= Duration::from_secs(60) {
-            let minutes = elapsed.as_secs() / 60;
-            let new_tokens = (minutes as u32) * self.refill_rate;
-            self.tokens = std::cmp::min(self.max_tokens, self.tokens + new_tokens);
-            self.last_refill = now;
-        }
-    }
+    redis_client: RedisClient,
+    requests_per_minute: u32,
+    burst_size: u32,
 }
 
 impl RateLimitMiddleware {
-    pub fn new(config: &RateLimitConfig) -> Self {
-        RateLimitMiddleware {
-            config: config.clone(),
-            buckets: Arc::new(Mutex::new(HashMap::new())),
+    pub fn new(redis_client: RedisClient, requests_per_minute: u32, burst_size: u32) -> Self {
+        Self {
+            redis_client,
+            requests_per_minute,
+            burst_size,
         }
     }
 
-    pub fn check_rate_limit(&self, session: &Session) -> Result<(), RateLimitError> {
-        if !self.config.enabled {
-            return Ok(());
-        }
+    /// Check if request is allowed (Token Bucket Algorithm)
+    /// Returns true if allowed, false if rate limit exceeded
+    pub async fn check_rate_limit(&self, client_id: &str) -> bool {
+        let key = format!("rate_limit:{}", client_id);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        let key = self.extract_key(session)?;
+        // Try to get current token bucket state from Redis
+        match self.get_token_bucket(&key).await {
+            Ok(Some((tokens, last_refill))) => {
+                // Calculate tokens to add since last refill
+                let elapsed = now.saturating_sub(last_refill);
+                let refill_rate = self.requests_per_minute as f64 / 60.0; // tokens per second
+                let tokens_to_add = (elapsed as f64 * refill_rate) as u32;
+                
+                // Current tokens = previous remaining + newly added, capped at bucket capacity
+                let current_tokens = (tokens + tokens_to_add).min(self.burst_size);
 
-        let mut buckets = self.buckets.lock().unwrap();
-        let bucket = buckets.entry(key).or_insert_with(|| {
-            TokenBucket::new(self.config.burst_size, self.config.requests_per_minute)
-        });
-
-        if bucket.try_consume(1) {
-            Ok(())
-        } else {
-            Err(RateLimitError("Request frequency is too high".to_string()))
+                if current_tokens > 0 {
+                    // Token available, consume one
+                    let new_tokens = current_tokens - 1;
+                    if let Err(e) = self.set_token_bucket(&key, new_tokens, now).await {
+                        log::error!("Failed to update token bucket for {}: {}", client_id, e);
+                    }
+                    log::debug!(
+                        "Rate limit check passed for {}: {} tokens remaining", 
+                        client_id, 
+                        new_tokens
+                    );
+                    true
+                } else {
+                    // No tokens available, rate limited
+                    log::warn!("Rate limit exceeded for {}: 0 tokens remaining", client_id);
+                    false
+                }
+            }
+            Ok(None) => {
+                // First request, initialize token bucket
+                // Bucket starts full, consume one token
+                let initial_tokens = self.burst_size - 1;
+                if let Err(e) = self.set_token_bucket(&key, initial_tokens, now).await {
+                    log::error!("Failed to initialize token bucket for {}: {}", client_id, e);
+                    // Fallback: allow request on Redis failure
+                    return true;
+                }
+                log::debug!("Initialized token bucket for {} with {} tokens", client_id, initial_tokens);
+                true
+            }
+            Err(e) => {
+                // Redis error, fallback strategy: allow request
+                log::error!("Redis error during rate limit check for {}: {}", client_id, e);
+                true
+            }
         }
     }
 
-    fn extract_key(&self, session: &Session) -> Result<String, RateLimitError> {
-        let ip = session
-            .req_header()
-            .headers
-            .get("X-Forwarded-For")
-            .or_else(|| session.req_header().headers.get("X-Real-IP"))
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown");
-        Ok(ip.to_string())
+    /// Get token bucket state from Redis
+    /// Returns (remaining_tokens, last_refill_timestamp)
+    async fn get_token_bucket(&self, key: &str) -> anyhow::Result<Option<(u32, u64)>> {
+        if let Some(value) = self.redis_client.get(key).await? {
+            // Format: "tokens:timestamp"
+            let parts: Vec<&str> = value.split(':').collect();
+            if parts.len() == 2 {
+                let tokens = parts[0].parse::<u32>()?;
+                let timestamp = parts[1].parse::<u64>()?;
+                return Ok(Some((tokens, timestamp)));
+            } else {
+                log::warn!("Invalid token bucket format in Redis for key {}: {}", key, value);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Set token bucket state to Redis
+    async fn set_token_bucket(&self, key: &str, tokens: u32, timestamp: u64) -> anyhow::Result<()> {
+        let value = format!("{}:{}", tokens, timestamp);
+        let ttl = 120; // 2 minutes TTL to prevent Redis data accumulation
+        self.redis_client.set_ex(key, &value, ttl).await
+            .map_err(|e| anyhow::anyhow!("Redis set_ex failed: {}", e))
+    }
+
+    /// Create 429 Too Many Requests response
+    pub fn too_many_requests_response() -> ResponseHeader {
+        let mut resp = ResponseHeader::build(429, None).unwrap();
+        resp.insert_header("Content-Type", "application/json")
+            .unwrap();
+        resp.insert_header("Retry-After", "60").unwrap();
+        resp
+    }
+
+    /// Get configured request limit
+    pub fn get_limit(&self) -> u32 {
+        self.requests_per_minute
+    }
+
+    /// Get configured burst size
+    pub fn get_burst_size(&self) -> u32 {
+        self.burst_size
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_token_bucket_format() {
+        let value = "10:1234567890";
+        let parts: Vec<&str> = value.split(':').collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].parse::<u32>().unwrap(), 10);
+        assert_eq!(parts[1].parse::<u64>().unwrap(), 1234567890);
+    }
+
+    #[test]
+    fn test_refill_calculation() {
+        let requests_per_minute = 60u32;
+        let refill_rate = requests_per_minute as f64 / 60.0;
+        assert_eq!(refill_rate, 1.0); // 1 token per second
+
+        let elapsed = 10u64; // 10 seconds
+        let tokens_to_add = (elapsed as f64 * refill_rate) as u32;
+        assert_eq!(tokens_to_add, 10); // Should refill 10 tokens in 10 seconds
     }
 }
