@@ -1,20 +1,20 @@
 use async_trait::async_trait;
-use pingora_core::upstreams::peer::HttpPeer;
-use pingora_core::ErrorType;
-use pingora_proxy::{ProxyHttp, Session};
-use pingora_core::Result;
-use pingora_core::Error; 
-use pingora_http::{RequestHeader, ResponseHeader};
-use std::sync::Arc;
-use sqlx::PgPool;
 use bytes::Bytes;
+use pingora_core::upstreams::peer::HttpPeer;
+use pingora_core::Error;
+use pingora_core::ErrorType;
+use pingora_core::Result;
+use pingora_http::{RequestHeader, ResponseHeader};
+use pingora_proxy::{ProxyHttp, Session};
+use sqlx::PgPool;
+use std::sync::Arc;
 
-use crate::config::Settings;
-use crate::proxy::context::ProxyContext;
-use crate::auth::{JwtManager, register_user, login_user, refresh_token, logout_user};
+use crate::auth::{login_user, logout_user, refresh_token, register_user, JwtManager};
 use crate::cache::RedisClient;
-use pingora_core::upstreams::peer::Peer;
+use crate::config::Settings;
 use crate::load_balancing::manager::LoadBalancerManager;
+use crate::proxy::context::ProxyContext;
+use pingora_core::upstreams::peer::Peer;
 
 /// Proxy service with authentication
 pub struct ProxyService {
@@ -53,11 +53,7 @@ impl ProxyHttp for ProxyService {
     }
 
     /// Handle incoming requests - routing and authentication
-    async fn request_filter(
-        &self,
-        session: &mut Session,
-        ctx: &mut Self::CTX,
-    ) -> Result<bool> {
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
         let req = session.req_header_mut();
         let path = req.uri.path().to_string(); // Clone to avoid borrowing issues
         let method = req.method.as_str().to_string(); // Clone to avoid borrowing issues
@@ -78,15 +74,17 @@ impl ProxyHttp for ProxyService {
         // ============================================================
         // Route Authentication Endpoints
         // ============================================================
-        
+
         if path.starts_with("/auth/") {
-            return self.handle_auth_endpoint(session, ctx, &path, &method).await;
+            return self
+                .handle_auth_endpoint(session, ctx, &path, &method)
+                .await;
         }
 
         // ============================================================
         // Protected Routes - Require JWT Authentication
         // ============================================================
-        
+
         if self.settings.middleware.auth.enabled {
             match self.authenticate_request(session.req_header(), ctx).await {
                 Ok(()) => {
@@ -103,7 +101,7 @@ impl ProxyHttp for ProxyService {
         // ============================================================
         // Rate Limiting
         // ============================================================
-        
+
         if self.settings.middleware.rate_limit.enabled {
             if let Err(e) = self.check_rate_limit(ctx).await {
                 log::warn!("[{}] Rate limit exceeded: {}", ctx.request_id, e);
@@ -122,7 +120,9 @@ impl ProxyHttp for ProxyService {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>> {
-        let peer = self.load_balancer.select_peer()
+        let peer = self
+            .load_balancer
+            .select_peer()
             .map_err(|e| Error::because(ErrorType::InternalError, "Load balancer error", e))?;
 
         log::info!("[{}] Selected upstream: {}", ctx.request_id, peer.address());
@@ -179,16 +179,12 @@ impl ProxyService {
     }
 
     /// Handle user registration
-    async fn handle_register(
-        &self,
-        session: &mut Session,
-        ctx: &ProxyContext,
-    ) -> Result<()> {
+    async fn handle_register(&self, session: &mut Session, ctx: &ProxyContext) -> Result<()> {
         log::info!("[{}] Handling registration", ctx.request_id);
 
         // Read request body
         let body = self.read_request_body(session).await?;
-        
+
         let request: crate::auth::RegisterRequest = serde_json::from_slice(&body)
             .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
 
@@ -204,7 +200,7 @@ impl ProxyService {
             Ok(response) => {
                 let json = serde_json::to_string(&response)
                     .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
-                
+
                 self.send_json_response(session, 201, json).await?;
             }
             Err(e) => {
@@ -218,18 +214,13 @@ impl ProxyService {
     }
 
     /// Handle user login
-    async fn handle_login(
-        &self,
-        session: &mut Session,
-        ctx: &ProxyContext,
-    ) -> Result<()> {
+    async fn handle_login(&self, session: &mut Session, ctx: &ProxyContext) -> Result<()> {
         log::info!("[{}] Handling login", ctx.request_id);
 
         let body = self.read_request_body(session).await?;
-        
-        let request: crate::auth::LoginRequest = serde_json::from_slice(&body)
-            .map_err(|_| Error::new_str("Invalid JSON"))?;
 
+        let request: crate::auth::LoginRequest =
+            serde_json::from_slice(&body).map_err(|_| Error::new_str("Invalid JSON"))?;
 
         match login_user(
             &self.db_pool,
@@ -242,7 +233,7 @@ impl ProxyService {
             Ok(response) => {
                 let json = serde_json::to_string(&response)
                     .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
-                
+
                 self.send_json_response(session, 200, json).await?;
             }
             Err(e) => {
@@ -256,15 +247,11 @@ impl ProxyService {
     }
 
     /// Handle token refresh
-    async fn handle_refresh(
-        &self,
-        session: &mut Session,
-        ctx: &ProxyContext,
-    ) -> Result<()> {
+    async fn handle_refresh(&self, session: &mut Session, ctx: &ProxyContext) -> Result<()> {
         log::info!("[{}] Handling token refresh", ctx.request_id);
 
         let body = self.read_request_body(session).await?;
-        
+
         let request: crate::auth::RefreshRequest = serde_json::from_slice(&body)
             .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
 
@@ -279,7 +266,7 @@ impl ProxyService {
             Ok(response) => {
                 let json = serde_json::to_string(&response)
                     .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
-                
+
                 self.send_json_response(session, 200, json).await?;
             }
             Err(e) => {
@@ -293,18 +280,14 @@ impl ProxyService {
     }
 
     /// Handle user logout
-    async fn handle_logout(
-        &self,
-        session: &mut Session,
-        ctx: &ProxyContext,
-    ) -> Result<()> {
+    async fn handle_logout(&self, session: &mut Session, ctx: &ProxyContext) -> Result<()> {
         log::info!("[{}] Handling logout", ctx.request_id);
 
         // Extract access token from Authorization header
         let access_token = self.extract_token_from_header(session.req_header())?;
 
         let body = self.read_request_body(session).await?;
-        
+
         let request: crate::auth::LogoutRequest = serde_json::from_slice(&body)
             .map_err(|e| Error::because(ErrorType::InternalError, "Invalid JSON", e))?;
 
@@ -338,11 +321,14 @@ impl ProxyService {
         ctx: &mut ProxyContext,
     ) -> std::result::Result<(), String> {
         // Extract token from Authorization header
-        let token = self.extract_token_from_header(req)
+        let token = self
+            .extract_token_from_header(req)
             .map_err(|e| format!("Token extraction failed: {}", e))?;
 
         // Check if token is blacklisted
-        let is_blacklisted = self.redis_client.is_token_blacklisted(&token)
+        let is_blacklisted = self
+            .redis_client
+            .is_token_blacklisted(&token)
             .await
             .map_err(|e| format!("Redis error: {}", e))?;
 
@@ -364,7 +350,9 @@ impl ProxyService {
 
     /// Extract JWT token from Authorization header
     fn extract_token_from_header(&self, req: &RequestHeader) -> Result<String> {
-        let auth_header = req.headers.get("Authorization")
+        let auth_header = req
+            .headers
+            .get("Authorization")
             .ok_or_else(|| pingora_core::Error::new_str("Missing Authorization header"))?
             .to_str()
             .map_err(|_| pingora_core::Error::new_str("Invalid Authorization header"))?;
@@ -386,18 +374,20 @@ impl ProxyService {
             format!("rate_limit:anonymous:{}", ctx.request_id)
         };
 
-        let (allowed, count, _) = self.redis_client.check_rate_limit(
-            &key,
-            self.settings.middleware.rate_limit.requests_per_minute as i64,
-            60,
-        )
-        .await
-        .map_err(|e| format!("Rate limit check failed: {}", e))?;
+        let (allowed, count, _) = self
+            .redis_client
+            .check_rate_limit(
+                &key,
+                self.settings.middleware.rate_limit.requests_per_minute as i64,
+                60,
+            )
+            .await
+            .map_err(|e| format!("Rate limit check failed: {}", e))?;
 
         if !allowed {
-            return Err(format!("Rate limit exceeded: {}/{}",
-                count,
-                self.settings.middleware.rate_limit.requests_per_minute
+            return Err(format!(
+                "Rate limit exceeded: {}/{}",
+                count, self.settings.middleware.rate_limit.requests_per_minute
             ));
         }
 
@@ -409,7 +399,7 @@ impl ProxyService {
         use bytes::Buf;
 
         let mut body = Vec::new();
-        
+
         while let Some(chunk) = session.read_request_body().await? {
             body.extend_from_slice(chunk.chunk());
         }
@@ -422,14 +412,14 @@ impl ProxyService {
         &self,
         session: &mut Session,
         status: u16,
-        json: String,  // Changed from &str to String
+        json: String, // Changed from &str to String
     ) -> Result<()> {
         let mut resp = ResponseHeader::build(status, Some(4))?;
         resp.insert_header("Content-Type", "application/json")?;
         resp.insert_header("Content-Length", json.len().to_string())?;
-        
+
         session.write_response_header(Box::new(resp), false).await?;
-        
+
         // Convert String to Bytes
         let body = Bytes::from(json);
         session.write_response_body(Some(body), true).await?;

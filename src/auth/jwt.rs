@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation, Algorithm};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -22,7 +22,7 @@ pub struct JwtManager {
 
 impl JwtManager {
     /// Create a new JWT manager
-    /// 
+    ///
     /// # Arguments
     /// * `secret` - Secret key for signing tokens
     /// * `access_token_expiration` - Access token expiration in seconds
@@ -40,18 +40,21 @@ impl JwtManager {
     }
 
     /// Generate an access token for a user
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
-    /// 
+    ///
     /// # Returns
     /// * `Result<String, jsonwebtoken::errors::Error>` - JWT token or error
-    /// 
+    ///
     /// # Example
     /// ```
     /// let token = jwt_manager.generate_access_token(&user_id)?;
     /// ```
-    pub fn generate_access_token(&self, user_id: &Uuid) -> Result<String, jsonwebtoken::errors::Error> {
+    pub fn generate_access_token(
+        &self,
+        user_id: &Uuid,
+    ) -> Result<String, jsonwebtoken::errors::Error> {
         let now = Utc::now();
         let expiration = now + Duration::seconds(self.access_token_expiration);
 
@@ -67,13 +70,13 @@ impl JwtManager {
     }
 
     /// Generate a refresh token for a user
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
-    /// 
+    ///
     /// # Returns
     /// * `Result<(String, String), jsonwebtoken::errors::Error>` - (token, token_hash) or error
-    /// 
+    ///
     /// # Note
     /// Returns both the token (to send to client) and its hash (to store in database)
     pub fn generate_refresh_token(
@@ -92,7 +95,7 @@ impl JwtManager {
         };
 
         let token = self.encode_token(&claims)?;
-        
+
         // Hash the token for storage (similar to password hashing)
         let token_hash = self.hash_token(&token);
 
@@ -100,13 +103,13 @@ impl JwtManager {
     }
 
     /// Decode and validate a JWT token
-    /// 
+    ///
     /// # Arguments
     /// * `token` - JWT token string
-    /// 
+    ///
     /// # Returns
     /// * `Result<Claims, jsonwebtoken::errors::Error>` - Decoded claims or error
-    /// 
+    ///
     /// # Example
     /// ```
     /// let claims = jwt_manager.decode_token(&token)?;
@@ -117,15 +120,15 @@ impl JwtManager {
         let validation = Validation::new(Algorithm::HS256);
 
         let token_data = decode::<Claims>(token, &decoding_key, &validation)?;
-        
+
         Ok(token_data.claims)
     }
 
     /// Validate token and check if it's not expired
-    /// 
+    ///
     /// # Arguments
     /// * `token` - JWT token string
-    /// 
+    ///
     /// # Returns
     /// * `Result<Claims, String>` - Claims if valid, error message if invalid
     pub fn validate_token(&self, token: &str) -> Result<Claims, String> {
@@ -136,49 +139,11 @@ impl JwtManager {
                 if claims.exp < now {
                     return Err("Token has expired".to_string());
                 }
-                
+
                 Ok(claims)
             }
             Err(e) => Err(format!("Invalid token: {}", e)),
         }
-    }
-
-    /// Extract user ID from token without full validation
-    /// Useful for logging or non-critical operations
-    /// 
-    /// # Arguments
-    /// * `token` - JWT token string
-    /// 
-    /// # Returns
-    /// * `Option<String>` - User ID if extractable, None otherwise
-    pub fn extract_user_id(&self, token: &str) -> Option<String> {
-        self.decode_token(token).ok().map(|claims| claims.sub)
-    }
-
-    /// Get token expiration time
-    /// 
-    /// # Arguments
-    /// * `token` - JWT token string
-    /// 
-    /// # Returns
-    /// * `Option<i64>` - Expiration timestamp if valid, None otherwise
-    pub fn get_token_expiration(&self, token: &str) -> Option<i64> {
-        self.decode_token(token).ok().map(|claims| claims.exp)
-    }
-
-    /// Check if token is of specific type (access or refresh)
-    /// 
-    /// # Arguments
-    /// * `token` - JWT token string
-    /// * `expected_type` - Expected token type ("access" or "refresh")
-    /// 
-    /// # Returns
-    /// * `bool` - true if token type matches
-    pub fn is_token_type(&self, token: &str, expected_type: &str) -> bool {
-        self.decode_token(token)
-            .ok()
-            .map(|claims| claims.token_type == expected_type)
-            .unwrap_or(false)
     }
 
     /// Encode claims into JWT token
@@ -202,11 +167,6 @@ impl JwtManager {
     pub fn access_token_expiration(&self) -> i64 {
         self.access_token_expiration
     }
-
-    /// Get refresh token expiration in seconds
-    pub fn refresh_token_expiration(&self) -> i64 {
-        self.refresh_token_expiration
-    }
 }
 
 #[cfg(test)]
@@ -216,8 +176,8 @@ mod tests {
     fn create_test_manager() -> JwtManager {
         JwtManager::new(
             "test_secret_key_12345".to_string(),
-            900,      // 15 minutes
-            604800,   // 7 days
+            900,    // 15 minutes
+            604800, // 7 days
         )
     }
 
@@ -268,36 +228,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_user_id() {
-        let manager = create_test_manager();
-        let user_id = Uuid::new_v4();
-
-        let token = manager.generate_access_token(&user_id).unwrap();
-        let extracted_id = manager.extract_user_id(&token);
-
-        assert_eq!(extracted_id, Some(user_id.to_string()));
-    }
-
-    #[test]
-    fn test_token_type_check() {
-        let manager = create_test_manager();
-        let user_id = Uuid::new_v4();
-
-        let access_token = manager.generate_access_token(&user_id).unwrap();
-        let (refresh_token, _) = manager.generate_refresh_token(&user_id).unwrap();
-
-        assert!(manager.is_token_type(&access_token, "access"));
-        assert!(!manager.is_token_type(&access_token, "refresh"));
-        
-        assert!(manager.is_token_type(&refresh_token, "refresh"));
-        assert!(!manager.is_token_type(&refresh_token, "access"));
-    }
-
-    #[test]
     fn test_different_secrets_produce_different_tokens() {
         let manager1 = JwtManager::new("secret1".to_string(), 900, 604800);
         let manager2 = JwtManager::new("secret2".to_string(), 900, 604800);
-        
+
         let user_id = Uuid::new_v4();
         let token1 = manager1.generate_access_token(&user_id).unwrap();
 

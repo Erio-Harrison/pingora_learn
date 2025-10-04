@@ -25,43 +25,43 @@ pub struct RefreshResponse {
 pub enum RefreshError {
     #[error("Invalid refresh token")]
     InvalidToken,
-    
+
     #[error("Refresh token has expired")]
     TokenExpired,
-    
+
     #[error("Refresh token has been revoked")]
     TokenRevoked,
-    
+
     #[error("Token is blacklisted")]
     TokenBlacklisted,
-    
+
     #[error("Database error: {0}")]
     DatabaseError(String),
-    
+
     #[error("Token generation failed: {0}")]
     TokenError(String),
-    
+
     #[error("Cache error: {0}")]
     CacheError(String),
 }
 
 /// Refresh access token using refresh token
-/// 
+///
 /// # Arguments
 /// * `pool` - Database connection pool
 /// * `redis_client` - Redis client for blacklist checking
 /// * `jwt_manager` - JWT token manager
 /// * `request` - Refresh request data
-/// 
+///
 /// # Returns
 /// * `Result<RefreshResponse, RefreshError>` - New access token or error
-/// 
+///
 /// # Example
 /// ```
 /// let request = RefreshRequest {
 ///     refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...".to_string(),
 /// };
-/// 
+///
 /// let response = refresh_token(
 ///     &pool,
 ///     &redis_client,
@@ -76,7 +76,8 @@ pub async fn refresh_token(
     request: RefreshRequest,
 ) -> Result<RefreshResponse, RefreshError> {
     // Decode and validate refresh token
-    let claims = jwt_manager.validate_token(&request.refresh_token)
+    let claims = jwt_manager
+        .validate_token(&request.refresh_token)
         .map_err(|_| RefreshError::InvalidToken)?;
 
     // Check token type
@@ -86,7 +87,8 @@ pub async fn refresh_token(
     }
 
     // Check if token is blacklisted in Redis
-    let is_blacklisted = redis_client.is_token_blacklisted(&request.refresh_token)
+    let is_blacklisted = redis_client
+        .is_token_blacklisted(&request.refresh_token)
         .await
         .map_err(|e| RefreshError::CacheError(e.to_string()))?;
 
@@ -100,23 +102,23 @@ pub async fn refresh_token(
 
     // Verify refresh token exists in database and is not expired
     let token_repo = TokenRepository::new(pool);
-    let stored_token = token_repo.verify_refresh_token(&token_hash)
+    let stored_token = token_repo
+        .verify_refresh_token(&token_hash)
         .await
         .map_err(|e| match e {
             crate::db::token::TokenError::NotFound => RefreshError::TokenRevoked,
             crate::db::token::TokenError::Expired => RefreshError::TokenExpired,
-            crate::db::token::TokenError::Revoked => RefreshError::TokenRevoked,
             _ => RefreshError::DatabaseError(e.to_string()),
         })?;
 
     log::info!("Refresh token validated for user: {}", stored_token.user_id);
 
     // Parse user_id from claims
-    let user_id = uuid::Uuid::parse_str(&claims.sub)
-        .map_err(|_| RefreshError::InvalidToken)?;
+    let user_id = uuid::Uuid::parse_str(&claims.sub).map_err(|_| RefreshError::InvalidToken)?;
 
     // Generate new access token
-    let new_access_token = jwt_manager.generate_access_token(&user_id)
+    let new_access_token = jwt_manager
+        .generate_access_token(&user_id)
         .map_err(|e| RefreshError::TokenError(e.to_string()))?;
 
     log::info!("New access token generated for user: {}", user_id);
@@ -150,15 +152,9 @@ mod tests {
             .await
             .unwrap();
 
-        let redis_client = RedisClient::new("redis://localhost:6379")
-            .await
-            .unwrap();
+        let redis_client = RedisClient::new("redis://localhost:6379").await.unwrap();
 
-        let jwt_manager = JwtManager::new(
-            "test_secret".to_string(),
-            900,
-            604800,
-        );
+        let jwt_manager = JwtManager::new("test_secret".to_string(), 900, 604800);
 
         let user_id = uuid::Uuid::new_v4();
         let (refresh_token_str, token_hash) = jwt_manager.generate_refresh_token(&user_id).unwrap();
@@ -166,7 +162,8 @@ mod tests {
 
         // Save to database
         let token_repo = TokenRepository::new(&pool);
-        token_repo.save_refresh_token(&user_id, &token_hash, 604800)
+        token_repo
+            .save_refresh_token(&user_id, &token_hash, 604800)
             .await
             .unwrap();
 

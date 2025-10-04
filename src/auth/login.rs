@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use thiserror::Error;
 
 use crate::auth::{JwtManager, PasswordManager};
-use crate::db::{UserRepository, TokenRepository};
+use crate::db::{TokenRepository, UserRepository};
 
 /// Login request payload
 #[derive(Debug, Clone, Deserialize)]
@@ -28,35 +28,35 @@ pub struct LoginResponse {
 pub enum LoginError {
     #[error("Invalid credentials")]
     InvalidCredentials,
-    
+
     #[error("User not found")]
     UserNotFound,
-    
+
     #[error("Database error: {0}")]
     DatabaseError(String),
-    
+
     #[error("Token generation failed: {0}")]
     TokenError(String),
 }
 
 /// Authenticate user and generate tokens
-/// 
+///
 /// # Arguments
 /// * `pool` - Database connection pool
 /// * `jwt_manager` - JWT token manager
 /// * `request` - Login request data
 /// * `refresh_token_expiration` - Refresh token expiration in seconds
-/// 
+///
 /// # Returns
 /// * `Result<LoginResponse, LoginError>` - Login response or error
-/// 
+///
 /// # Example
 /// ```
 /// let request = LoginRequest {
 ///     email: "user@example.com".to_string(),
 ///     password: "SecurePass123!".to_string(),
 /// };
-/// 
+///
 /// let response = login_user(
 ///     &pool,
 ///     &jwt_manager,
@@ -73,7 +73,8 @@ pub async fn login_user(
     let user_repo = UserRepository::new(pool);
 
     // Find user by email
-    let user = user_repo.find_by_email(&request.email)
+    let user = user_repo
+        .find_by_email(&request.email)
         .await
         .map_err(|e| match e {
             crate::db::user::UserError::NotFound => LoginError::UserNotFound,
@@ -92,21 +93,20 @@ pub async fn login_user(
     log::info!("User logged in: {} (ID: {})", user.email, user.id);
 
     // Generate tokens
-    let access_token = jwt_manager.generate_access_token(&user.id)
+    let access_token = jwt_manager
+        .generate_access_token(&user.id)
         .map_err(|e| LoginError::TokenError(e.to_string()))?;
 
-    let (refresh_token, refresh_token_hash) = jwt_manager.generate_refresh_token(&user.id)
+    let (refresh_token, refresh_token_hash) = jwt_manager
+        .generate_refresh_token(&user.id)
         .map_err(|e| LoginError::TokenError(e.to_string()))?;
 
     // Save refresh token to database
     let token_repo = TokenRepository::new(pool);
-    token_repo.save_refresh_token(
-        &user.id,
-        &refresh_token_hash,
-        refresh_token_expiration,
-    )
-    .await
-    .map_err(|e| LoginError::DatabaseError(e.to_string()))?;
+    token_repo
+        .save_refresh_token(&user.id, &refresh_token_hash, refresh_token_expiration)
+        .await
+        .map_err(|e| LoginError::DatabaseError(e.to_string()))?;
 
     log::info!("Tokens generated for user: {}", user.email);
 
@@ -134,11 +134,7 @@ mod tests {
             .await
             .unwrap();
 
-        let jwt_manager = JwtManager::new(
-            "test_secret".to_string(),
-            900,
-            604800,
-        );
+        let jwt_manager = JwtManager::new("test_secret".to_string(), 900, 604800);
 
         // Create test user
         let user_repo = UserRepository::new(&pool);

@@ -16,7 +16,11 @@ impl DbPool {
     ) -> Result<Self, sqlx::Error> {
         log::info!("Initializing database connection pool...");
         log::info!("Database URL: {}", Self::mask_password(database_url));
-        log::info!("Max connections: {}, Min connections: {}", max_connections, min_connections);
+        log::info!(
+            "Max connections: {}, Min connections: {}",
+            max_connections,
+            min_connections
+        );
 
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
@@ -39,9 +43,7 @@ impl DbPool {
 
     /// Test database connection
     pub async fn test_connection(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("SELECT 1")
-            .fetch_one(&self.pool)
-            .await?;
+        sqlx::query("SELECT 1").fetch_one(&self.pool).await?;
         Ok(())
     }
 

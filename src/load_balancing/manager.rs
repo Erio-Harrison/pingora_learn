@@ -8,7 +8,7 @@ use crate::config::settings::LoadBalancingConfig;
 pub enum LoadBalancerError {
     #[error("No upstreams configured")]
     NoUpstreams,
-    
+
     #[error("Invalid strategy: {0}")]
     InvalidStrategy(String),
 }
@@ -37,7 +37,9 @@ impl LoadBalancerManager {
         match self.config.strategy.as_str() {
             "round_robin" => self.round_robin(),
             "random" => self.random(),
-            _ => Err(LoadBalancerError::InvalidStrategy(self.config.strategy.clone())),
+            _ => Err(LoadBalancerError::InvalidStrategy(
+                self.config.strategy.clone(),
+            )),
         }
     }
 

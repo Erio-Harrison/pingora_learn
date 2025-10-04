@@ -5,13 +5,13 @@ use uuid::Uuid;
 pub struct ProxyContext {
     /// Authenticated user ID (if authenticated)
     pub user_id: Option<Uuid>,
-    
+
     /// Request ID for tracking
     pub request_id: String,
-    
+
     /// Client IP address
     pub client_ip: Option<String>,
-    
+
     /// Request start time (for metrics)
     pub start_time: std::time::Instant,
 }
@@ -30,11 +30,6 @@ impl ProxyContext {
     /// Set authenticated user ID
     pub fn set_user_id(&mut self, user_id: Uuid) {
         self.user_id = Some(user_id);
-    }
-
-    /// Check if request is authenticated
-    pub fn is_authenticated(&self) -> bool {
-        self.user_id.is_some()
     }
 
     /// Get elapsed time since request started

@@ -2,10 +2,10 @@
 use crate::config::settings::RateLimitConfig;
 use pingora_proxy::Session;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use std::error::Error;
 use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub struct RateLimitMiddleware {
     config: RateLimitConfig,
@@ -39,10 +39,10 @@ impl TokenBucket {
             refill_rate,
         }
     }
-    
+
     fn try_consume(&mut self, tokens: u32) -> bool {
         self.refill();
-        
+
         if self.tokens >= tokens {
             self.tokens -= tokens;
             true
@@ -50,11 +50,11 @@ impl TokenBucket {
             false
         }
     }
-    
+
     fn refill(&mut self) {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill);
-        
+
         if elapsed >= Duration::from_secs(60) {
             let minutes = elapsed.as_secs() / 60;
             let new_tokens = (minutes as u32) * self.refill_rate;
@@ -71,29 +71,31 @@ impl RateLimitMiddleware {
             buckets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-    
+
     pub fn check_rate_limit(&self, session: &Session) -> Result<(), RateLimitError> {
         if !self.config.enabled {
             return Ok(());
         }
-        
+
         let key = self.extract_key(session)?;
-        
+
         let mut buckets = self.buckets.lock().unwrap();
         let bucket = buckets.entry(key).or_insert_with(|| {
             TokenBucket::new(self.config.burst_size, self.config.requests_per_minute)
         });
-        
+
         if bucket.try_consume(1) {
             Ok(())
         } else {
             Err(RateLimitError("Request frequency is too high".to_string()))
         }
     }
-    
+
     fn extract_key(&self, session: &Session) -> Result<String, RateLimitError> {
-        // 简化实现，使用固定的客户端标识
-        let ip = session.req_header().headers.get("X-Forwarded-For")
+        let ip = session
+            .req_header()
+            .headers
+            .get("X-Forwarded-For")
             .or_else(|| session.req_header().headers.get("X-Real-IP"))
             .and_then(|v| v.to_str().ok())
             .unwrap_or("unknown");

@@ -77,10 +77,10 @@ impl Settings {
         dotenv::dotenv().ok();
 
         let content = fs::read_to_string(path)?;
-        
+
         // Replace environment variables in the format ${VAR_NAME}
         let expanded_content = Self::expand_env_vars(&content);
-        
+
         let settings: Settings = serde_yaml::from_str(&expanded_content)?;
         Ok(settings)
     }
@@ -88,22 +88,25 @@ impl Settings {
     /// Expand environment variables in the format ${VAR_NAME}
     fn expand_env_vars(content: &str) -> String {
         let mut result = content.to_string();
-        
+
         // Find all ${...} patterns
         while let Some(start) = result.find("${") {
             if let Some(end) = result[start..].find('}') {
                 let var_name = &result[start + 2..start + end];
                 let var_value = std::env::var(var_name).unwrap_or_else(|_| {
-                    log::warn!("Environment variable {} not found, using empty string", var_name);
+                    log::warn!(
+                        "Environment variable {} not found, using empty string",
+                        var_name
+                    );
                     String::new()
                 });
-                
+
                 result.replace_range(start..start + end + 1, &var_value);
             } else {
                 break;
             }
         }
-        
+
         result
     }
 
@@ -149,7 +152,10 @@ impl Settings {
                 return Err("Upstream name cannot be empty".to_string());
             }
             if upstream.address.is_empty() {
-                return Err(format!("Upstream {} address cannot be empty", upstream.name));
+                return Err(format!(
+                    "Upstream {} address cannot be empty",
+                    upstream.name
+                ));
             }
             if upstream.port == 0 {
                 return Err(format!("Upstream {} port cannot be 0", upstream.name));

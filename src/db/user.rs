@@ -1,6 +1,6 @@
 use sqlx::PgPool;
-use uuid::Uuid;
 use thiserror::Error;
+use uuid::Uuid;
 
 /// User database model
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -22,10 +22,10 @@ pub struct CreateUser {
 pub enum UserError {
     #[error("User not found")]
     NotFound,
-    
+
     #[error("Email already exists")]
     EmailExists,
-    
+
     #[error("Database error: {0}")]
     DatabaseError(#[from] sqlx::Error),
 }
@@ -42,13 +42,13 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Create a new user
-    /// 
+    ///
     /// # Arguments
     /// * `user_data` - User creation data
-    /// 
+    ///
     /// # Returns
     /// * `Result<User, UserError>` - Created user or error
-    /// 
+    ///
     /// # Example
     /// ```
     /// let user_data = CreateUser {
@@ -68,7 +68,7 @@ impl<'a> UserRepository<'a> {
             INSERT INTO users (email, password_hash)
             VALUES ($1, $2)
             RETURNING id, email, password_hash
-            "#
+            "#,
         )
         .bind(&user_data.email)
         .bind(&user_data.password_hash)
@@ -81,10 +81,10 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Find user by ID
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
-    /// 
+    ///
     /// # Returns
     /// * `Result<User, UserError>` - User or error
     pub async fn find_by_id(&self, user_id: &Uuid) -> Result<User, UserError> {
@@ -93,7 +93,7 @@ impl<'a> UserRepository<'a> {
             SELECT id, email, password_hash
             FROM users
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(user_id)
         .fetch_optional(self.pool)
@@ -104,13 +104,13 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Find user by email
-    /// 
+    ///
     /// # Arguments
     /// * `email` - User's email address
-    /// 
+    ///
     /// # Returns
     /// * `Result<User, UserError>` - User or error
-    /// 
+    ///
     /// # Example
     /// ```
     /// let user = user_repo.find_by_email("user@example.com").await?;
@@ -121,7 +121,7 @@ impl<'a> UserRepository<'a> {
             SELECT id, email, password_hash
             FROM users
             WHERE email = $1
-            "#
+            "#,
         )
         .bind(email)
         .fetch_optional(self.pool)
@@ -132,17 +132,17 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Check if email already exists
-    /// 
+    ///
     /// # Arguments
     /// * `email` - Email to check
-    /// 
+    ///
     /// # Returns
     /// * `Result<bool, UserError>` - true if exists, false otherwise
     pub async fn email_exists(&self, email: &str) -> Result<bool, UserError> {
         let result = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)
-            "#
+            "#,
         )
         .bind(email)
         .fetch_one(self.pool)
@@ -152,11 +152,11 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Update user's password
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
     /// * `new_password_hash` - New hashed password
-    /// 
+    ///
     /// # Returns
     /// * `Result<User, UserError>` - Updated user or error
     pub async fn update_password(
@@ -170,7 +170,7 @@ impl<'a> UserRepository<'a> {
             SET password_hash = $1
             WHERE id = $2
             RETURNING id, email, password_hash
-            "#
+            "#,
         )
         .bind(new_password_hash)
         .bind(user_id)
@@ -184,10 +184,10 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Delete user by ID
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
-    /// 
+    ///
     /// # Returns
     /// * `Result<(), UserError>` - Success or error
     pub async fn delete(&self, user_id: &Uuid) -> Result<(), UserError> {
@@ -195,7 +195,7 @@ impl<'a> UserRepository<'a> {
             r#"
             DELETE FROM users
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(user_id)
         .execute(self.pool)
@@ -211,11 +211,11 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Get all users (for admin purposes, use with caution)
-    /// 
+    ///
     /// # Arguments
     /// * `limit` - Maximum number of users to return
     /// * `offset` - Number of users to skip
-    /// 
+    ///
     /// # Returns
     /// * `Result<Vec<User>, UserError>` - List of users or error
     pub async fn list(&self, limit: i64, offset: i64) -> Result<Vec<User>, UserError> {
@@ -225,7 +225,7 @@ impl<'a> UserRepository<'a> {
             FROM users
             ORDER BY id
             LIMIT $1 OFFSET $2
-            "#
+            "#,
         )
         .bind(limit)
         .bind(offset)
@@ -236,14 +236,14 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Count total users
-    /// 
+    ///
     /// # Returns
     /// * `Result<i64, UserError>` - Total user count or error
     pub async fn count(&self) -> Result<i64, UserError> {
         let count = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*) FROM users
-            "#
+            "#,
         )
         .fetch_one(self.pool)
         .await?;
@@ -252,14 +252,14 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Verify user's password
-    /// 
+    ///
     /// # Arguments
     /// * `email` - User's email
     /// * `password` - Plain text password to verify
-    /// 
+    ///
     /// # Returns
     /// * `Result<Option<User>, UserError>` - Some(User) if valid, None if invalid password
-    /// 
+    ///
     /// # Example
     /// ```
     /// match user_repo.verify_credentials("user@example.com", "password").await? {
@@ -300,14 +300,15 @@ mod tests {
 
     // Note: These are integration tests that require a running database
     // Run with: cargo test --features integration-tests
-    
+
     #[tokio::test]
     #[ignore] // Remove this to run integration tests
     async fn test_user_crud() {
         // Setup test database connection
-        let pool = PgPool::connect("postgresql://proxy_user:proxy_pass@localhost:5432/pingora_proxy")
-            .await
-            .unwrap();
+        let pool =
+            PgPool::connect("postgresql://proxy_user:proxy_pass@localhost:5432/pingora_proxy")
+                .await
+                .unwrap();
 
         let repo = UserRepository::new(&pool);
 

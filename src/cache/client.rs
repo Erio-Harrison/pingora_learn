@@ -78,15 +78,15 @@ impl RedisClient {
         expiration_seconds: u64,
     ) -> Result<i64, redis::RedisError> {
         let mut conn = self.manager.clone();
-        
+
         // Use Redis transaction to atomically increment and set expiration
         let count: i64 = conn.incr(key, 1).await?;
-        
+
         // Only set expiration if this is the first increment
         if count == 1 {
             conn.expire::<_, ()>(key, expiration_seconds as i64).await?;
         }
-        
+
         Ok(count)
     }
 
@@ -116,7 +116,7 @@ impl RedisClient {
     ) -> Result<(bool, i64, Option<Duration>), redis::RedisError> {
         let count = self.incr_with_expiry(key, window_seconds).await?;
         let allowed = count <= max_requests;
-        
+
         // Get remaining TTL
         let mut conn = self.manager.clone();
         let ttl: i64 = conn.ttl(key).await?;
@@ -125,7 +125,7 @@ impl RedisClient {
         } else {
             None
         };
-        
+
         Ok((allowed, count, ttl_duration))
     }
 

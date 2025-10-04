@@ -2,13 +2,13 @@ use anyhow::{Context, Result};
 use pingora_core::server::Server;
 use pingora_proxy::http_proxy_service;
 
+mod auth;
+mod cache;
 mod config;
 mod db;
-mod cache;
-mod auth;
-mod proxy;
-mod middleware;
 mod load_balancing;
+mod middleware;
+mod proxy;
 
 use tokio::runtime::Runtime;
 
@@ -23,14 +23,18 @@ fn main() -> Result<()> {
     log::info!("Loading configuration...");
     let settings = config::Settings::load_from_file("config/proxy.yaml")
         .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
-    
-    settings.validate()
+
+    settings
+        .validate()
         .map_err(|e| anyhow::anyhow!("Configuration validation failed: {}", e))?;
 
     log::info!("✓ Configuration loaded");
     log::info!("  Listen port: {}", settings.server.listen_port);
     log::info!("  Auth enabled: {}", settings.middleware.auth.enabled);
-    log::info!("  Rate limit enabled: {}", settings.middleware.rate_limit.enabled);
+    log::info!(
+        "  Rate limit enabled: {}",
+        settings.middleware.rate_limit.enabled
+    );
 
     // Create runtime for async initializations
     let rt = Runtime::new().context("Failed to create Tokio runtime")?;
@@ -53,7 +57,7 @@ fn main() -> Result<()> {
             .await
             .context("Database connection test failed")
     })?;
-    
+
     log::info!("✓ Database connected");
 
     // Initialize Redis within async context
@@ -70,7 +74,7 @@ fn main() -> Result<()> {
             .await
             .context("Redis connection test failed")
     })?;
-    
+
     log::info!("✓ Redis connected");
 
     // Initialize JWT manager
@@ -84,11 +88,12 @@ fn main() -> Result<()> {
 
     // Initialize load balancer
     log::info!("Initializing load balancer...");
-    let load_balancer = load_balancing::manager::LoadBalancerManager::new(
-        settings.load_balancing.clone(),
-    )?;
-    log::info!("✓ Load balancer initialized with {} upstream(s)", 
-        settings.load_balancing.upstreams.len());
+    let load_balancer =
+        load_balancing::manager::LoadBalancerManager::new(settings.load_balancing.clone())?;
+    log::info!(
+        "✓ Load balancer initialized with {} upstream(s)",
+        settings.load_balancing.upstreams.len()
+    );
 
     // Create proxy service
     let proxy_service = proxy::service::ProxyService::new(
@@ -111,7 +116,10 @@ fn main() -> Result<()> {
     server.add_service(proxy);
 
     log::info!("\n========================================");
-    log::info!("✓ Server starting on 0.0.0.0:{}", settings.server.listen_port);
+    log::info!(
+        "✓ Server starting on 0.0.0.0:{}",
+        settings.server.listen_port
+    );
     log::info!("========================================\n");
 
     log::info!("Available endpoints:");

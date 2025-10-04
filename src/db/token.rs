@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
-use uuid::Uuid;
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Refresh token database model
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -17,13 +17,10 @@ pub struct RefreshToken {
 pub enum TokenError {
     #[error("Token not found")]
     NotFound,
-    
+
     #[error("Token has expired")]
     Expired,
-    
-    #[error("Token has been revoked")]
-    Revoked,
-    
+
     #[error("Database error: {0}")]
     DatabaseError(#[from] sqlx::Error),
 }
@@ -40,15 +37,15 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Save a refresh token to database
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
     /// * `token_hash` - Hashed refresh token
     /// * `expires_in_seconds` - Token expiration time in seconds
-    /// 
+    ///
     /// # Returns
     /// * `Result<RefreshToken, TokenError>` - Saved token or error
-    /// 
+    ///
     /// # Example
     /// ```
     /// let token = token_repo.save_refresh_token(
@@ -70,7 +67,7 @@ impl<'a> TokenRepository<'a> {
             INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
             VALUES ($1, $2, $3)
             RETURNING id, user_id, token_hash, expires_at
-            "#
+            "#,
         )
         .bind(user_id)
         .bind(token_hash)
@@ -78,16 +75,20 @@ impl<'a> TokenRepository<'a> {
         .fetch_one(self.pool)
         .await?;
 
-        log::info!("Refresh token saved for user: {} (expires: {})", user_id, expires_at);
+        log::info!(
+            "Refresh token saved for user: {} (expires: {})",
+            user_id,
+            expires_at
+        );
 
         Ok(token)
     }
 
     /// Find refresh token by hash
-    /// 
+    ///
     /// # Arguments
     /// * `token_hash` - Hashed refresh token
-    /// 
+    ///
     /// # Returns
     /// * `Result<RefreshToken, TokenError>` - Token or error
     pub async fn find_by_hash(&self, token_hash: &str) -> Result<RefreshToken, TokenError> {
@@ -96,7 +97,7 @@ impl<'a> TokenRepository<'a> {
             SELECT id, user_id, token_hash, expires_at
             FROM refresh_tokens
             WHERE token_hash = $1
-            "#
+            "#,
         )
         .bind(token_hash)
         .fetch_optional(self.pool)
@@ -107,13 +108,13 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Verify refresh token is valid (exists and not expired)
-    /// 
+    ///
     /// # Arguments
     /// * `token_hash` - Hashed refresh token
-    /// 
+    ///
     /// # Returns
     /// * `Result<RefreshToken, TokenError>` - Valid token or error
-    /// 
+    ///
     /// # Example
     /// ```
     /// match token_repo.verify_refresh_token(&token_hash).await {
@@ -137,10 +138,10 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Revoke a specific refresh token
-    /// 
+    ///
     /// # Arguments
     /// * `token_id` - Token's UUID
-    /// 
+    ///
     /// # Returns
     /// * `Result<(), TokenError>` - Success or error
     pub async fn revoke_token(&self, token_id: &Uuid) -> Result<(), TokenError> {
@@ -148,7 +149,7 @@ impl<'a> TokenRepository<'a> {
             r#"
             DELETE FROM refresh_tokens
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(token_id)
         .execute(self.pool)
@@ -164,10 +165,10 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Revoke refresh token by hash
-    /// 
+    ///
     /// # Arguments
     /// * `token_hash` - Hashed refresh token
-    /// 
+    ///
     /// # Returns
     /// * `Result<(), TokenError>` - Success or error
     pub async fn revoke_token_by_hash(&self, token_hash: &str) -> Result<(), TokenError> {
@@ -175,7 +176,7 @@ impl<'a> TokenRepository<'a> {
             r#"
             DELETE FROM refresh_tokens
             WHERE token_hash = $1
-            "#
+            "#,
         )
         .bind(token_hash)
         .execute(self.pool)
@@ -191,10 +192,10 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Revoke all refresh tokens for a user (useful for logout from all devices)
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
-    /// 
+    ///
     /// # Returns
     /// * `Result<u64, TokenError>` - Number of tokens revoked or error
     pub async fn revoke_all_user_tokens(&self, user_id: &Uuid) -> Result<u64, TokenError> {
@@ -202,7 +203,7 @@ impl<'a> TokenRepository<'a> {
             r#"
             DELETE FROM refresh_tokens
             WHERE user_id = $1
-            "#
+            "#,
         )
         .bind(user_id)
         .execute(self.pool)
@@ -215,10 +216,10 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Get all active refresh tokens for a user
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
-    /// 
+    ///
     /// # Returns
     /// * `Result<Vec<RefreshToken>, TokenError>` - List of active tokens or error
     pub async fn get_user_tokens(&self, user_id: &Uuid) -> Result<Vec<RefreshToken>, TokenError> {
@@ -229,7 +230,7 @@ impl<'a> TokenRepository<'a> {
             WHERE user_id = $1
             AND expires_at > NOW()
             ORDER BY expires_at DESC
-            "#
+            "#,
         )
         .bind(user_id)
         .fetch_all(self.pool)
@@ -239,7 +240,7 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Clean up expired tokens (should be run periodically)
-    /// 
+    ///
     /// # Returns
     /// * `Result<u64, TokenError>` - Number of tokens deleted or error
     pub async fn cleanup_expired_tokens(&self) -> Result<u64, TokenError> {
@@ -247,7 +248,7 @@ impl<'a> TokenRepository<'a> {
             r#"
             DELETE FROM refresh_tokens
             WHERE expires_at < NOW()
-            "#
+            "#,
         )
         .execute(self.pool)
         .await?;
@@ -261,10 +262,10 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Count active tokens for a user
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - User's UUID
-    /// 
+    ///
     /// # Returns
     /// * `Result<i64, TokenError>` - Count of active tokens or error
     pub async fn count_user_active_tokens(&self, user_id: &Uuid) -> Result<i64, TokenError> {
@@ -274,7 +275,7 @@ impl<'a> TokenRepository<'a> {
             FROM refresh_tokens
             WHERE user_id = $1
             AND expires_at > NOW()
-            "#
+            "#,
         )
         .bind(user_id)
         .fetch_one(self.pool)
@@ -284,10 +285,10 @@ impl<'a> TokenRepository<'a> {
     }
 
     /// Get token expiration time
-    /// 
+    ///
     /// # Arguments
     /// * `token_hash` - Hashed refresh token
-    /// 
+    ///
     /// # Returns
     /// * `Result<DateTime<Utc>, TokenError>` - Expiration time or error
     pub async fn get_token_expiration(
@@ -316,7 +317,8 @@ mod tests {
         let token_hash = "test_token_hash_123";
 
         // Save token
-        let token = repo.save_refresh_token(&user_id, token_hash, 604800)
+        let token = repo
+            .save_refresh_token(&user_id, token_hash, 604800)
             .await
             .unwrap();
         assert_eq!(token.user_id, user_id);
